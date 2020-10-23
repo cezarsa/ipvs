@@ -3,6 +3,7 @@
 package ipvs
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"time"
@@ -33,6 +34,8 @@ type Service struct {
 	AddressFamily uint16
 	PEName        string
 	Stats         SvcStats
+
+	Destinations []*Destination
 }
 
 // SvcStats defines an IPVS service statistics
@@ -79,6 +82,20 @@ type Config struct {
 type Handle struct {
 	seq  uint32
 	sock *nl.NetlinkSocket
+}
+
+func (s *Service) Equal(s2 *Service) bool {
+	if s == nil && s2 == nil {
+		return true
+	}
+	if s == nil || s2 == nil {
+		return false
+	}
+	return s.AddressFamily == s2.AddressFamily &&
+		s.Port == s2.Port &&
+		s.Protocol == s2.Protocol &&
+		s.FWMark == s2.FWMark &&
+		bytes.Equal(s.Address, s2.Address)
 }
 
 // New provides a new ipvs handle in the namespace pointed to by the
@@ -177,6 +194,11 @@ func (i *Handle) GetServices() ([]*Service, error) {
 // GetDestinations returns an array of Destinations configured for this Service
 func (i *Handle) GetDestinations(s *Service) ([]*Destination, error) {
 	return i.doGetDestinationsCmd(s, nil)
+}
+
+// GetServicesAndDestinations returns an array of services configured on the Node
+func (i *Handle) GetServicesAndDestinations(s *Service) ([]*Service, error) {
+	return i.doGetServicesAndDestinationsCmd(s)
 }
 
 // GetService gets details of a specific IPVS services, useful in updating statisics etc.,

@@ -124,14 +124,16 @@ func (i *Handle) doCmdwithResponse(s *Service, d *Destination, cmd uint8) ([][]b
 	req.Seq = atomic.AddUint32(&i.seq, 1)
 
 	if s == nil {
-		req.Flags |= syscall.NLM_F_DUMP                    //Flag to dump all messages
-		req.AddData(nl.NewRtAttr(ipvsCmdAttrService, nil)) //Add a dummy attribute
+		req.Flags |= syscall.NLM_F_DUMP //Flag to dump all messages
+		if cmd != ipvsCmdGetServiceDest {
+			req.AddData(nl.NewRtAttr(ipvsCmdAttrService, nil)) //Add a dummy attribute
+		}
 	} else {
 		req.AddData(fillService(s))
 	}
 
 	if d == nil {
-		if cmd == ipvsCmdGetDest {
+		if cmd == ipvsCmdGetDest || cmd == ipvsCmdGetServiceDest {
 			req.Flags |= syscall.NLM_F_DUMP
 		}
 
@@ -312,6 +314,30 @@ func assembleStats(msg []byte) (SvcStats, error) {
 	return s, nil
 }
 
+func assembleNestedDestinations(msg []byte) ([]*Destination, error) {
+	attrs, err := nl.ParseRouteAttr(msg)
+	if err != nil {
+		return nil, err
+	}
+	destinations := make([]*Destination, 0, len(attrs))
+	for _, attr := range attrs {
+		attrType := int(attr.Attr.Type)
+		if attrType != ipvsDestsAttrDest {
+			continue
+		}
+		destAttrs, err := nl.ParseRouteAttr(attr.Value)
+		if err != nil {
+			return nil, err
+		}
+		dst, err := assembleDestination(destAttrs)
+		if err != nil {
+			return nil, err
+		}
+		destinations = append(destinations, dst)
+	}
+	return destinations, nil
+}
+
 // assembleService assembles a services back from a hain of netlink attributes
 func assembleService(attrs []syscall.NetlinkRouteAttr) (*Service, error) {
 
@@ -348,6 +374,12 @@ func assembleService(attrs []syscall.NetlinkRouteAttr) (*Service, error) {
 				return nil, err
 			}
 			s.Stats = stats
+		case ipvsSvcAttrDests:
+			dests, err := assembleNestedDestinations(attr.Value)
+			if err != nil {
+				return nil, err
+			}
+			s.Destinations = dests
 		}
 
 	}
@@ -616,6 +648,31 @@ func (i *Handle) doSetConfigCmd(c *Config) error {
 	_, err := execute(i.sock, req, 0)
 
 	return err
+}
+
+func (i *Handle) doGetServicesAndDestinationsCmd(svc *Service) ([]*Service, error) {
+	msgs, err := i.doCmdwithResponse(svc, nil, ipvsCmdGetServiceDest)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastSvc *Service
+
+	res := make([]*Service, 0, len(msgs))
+	for _, msg := range msgs {
+		srv, err := i.parseService(msg)
+		if err != nil {
+			return nil, err
+		}
+		if srv.Equal(lastSvc) {
+			lastSvc.Destinations = append(lastSvc.Destinations, srv.Destinations...)
+		} else {
+			res = append(res, srv)
+			lastSvc = srv
+		}
+	}
+
+	return res, nil
 }
 
 // IPVS related netlink message format explained

@@ -41,6 +41,7 @@ const (
 	ipvsCmdGetInfo
 	ipvsCmdZero
 	ipvsCmdFlush
+	ipvsCmdGetServiceDest
 )
 
 // Attributes used in the first level of commands
@@ -69,6 +70,13 @@ const (
 	ipvsSvcAttrNetmask
 	ipvsSvcAttrStats
 	ipvsSvcAttrPEName
+	ipvsSvcAttrStats64
+	ipvsSvcAttrDests
+)
+
+const (
+	ipvsDestsAttrUnspec int = iota
+	ipvsDestsAttrDest
 )
 
 // Attributes used to describe a destination (real server). Used

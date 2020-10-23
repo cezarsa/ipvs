@@ -3,6 +3,7 @@
 package ipvs
 
 import (
+	"fmt"
 	"net"
 	"runtime"
 	"syscall"
@@ -232,7 +233,7 @@ func TestService(t *testing.T) {
 	}
 }
 
-func createDummyInterface(t *testing.T) {
+func createDummyInterface(t testing.TB) {
 	dummy := &netlink.Dummy{
 		LinkAttrs: netlink.LinkAttrs{
 			Name: "dummy",
@@ -380,7 +381,7 @@ func TestTimeouts(t *testing.T) {
 //
 //     defer setupTestOSContext(t)()
 //
-func setupTestOSContext(t *testing.T) func() {
+func setupTestOSContext(t testing.TB) func() {
 	t.Helper()
 	runtime.LockOSThread()
 	if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
@@ -405,3 +406,151 @@ func setupTestOSContext(t *testing.T) func() {
 		runtime.UnlockOSThread()
 	}
 }
+
+const (
+	benchmarkNSvcs      = 2000
+	benchmarkDstsPerSvc = 2
+)
+
+func prepareServices(t testing.TB, nSvcs, nDests int) *Handle {
+	ipvs, err := New("")
+	assert.NilError(t, err)
+
+	svcPort := uint16(10000)
+	dstPort := uint16(10000)
+	for i := 0; i < nSvcs; i++ {
+		svcPort++
+		svc := &Service{
+			Address:       net.ParseIP("10.0.0.1"),
+			Port:          svcPort,
+			Protocol:      unix.IPPROTO_TCP,
+			SchedName:     "rr",
+			AddressFamily: nl.FAMILY_V4,
+			Netmask:       0xffffffff,
+		}
+		err = ipvs.NewService(svc)
+		assert.NilError(t, err)
+		for j := 0; j < nDests; j++ {
+			dstPort++
+			dst := &Destination{
+				Address:       net.ParseIP("10.1.0.1"),
+				Port:          dstPort,
+				Weight:        1,
+				AddressFamily: nl.FAMILY_V4,
+			}
+			err = ipvs.NewDestination(svc, dst)
+			assert.NilError(t, err)
+		}
+	}
+	return ipvs
+}
+
+func BenchmarkListServicesAndIndividualDestinations(b *testing.B) {
+	defer setupTestOSContext(b)()
+	createDummyInterface(b)
+
+	ipvs := prepareServices(b, benchmarkNSvcs, benchmarkDstsPerSvc)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := 0
+		svcs, err := ipvs.GetServices()
+		if err != nil {
+			b.Fatalf("Failed to get services: %v", err)
+		}
+		for _, svc := range svcs {
+			dsts, err := ipvs.GetDestinations(svc)
+			if err != nil {
+				b.Fatalf("Failed to get destinations: %v", err)
+			}
+			for range dsts {
+				count++
+			}
+		}
+		if count != (benchmarkNSvcs * benchmarkDstsPerSvc) {
+			b.Fatalf("Wrong svcs + dsts count, expected %d, got %d", benchmarkNSvcs*benchmarkDstsPerSvc, count)
+		}
+	}
+	b.StopTimer()
+}
+
+func BenchmarkListServicesAndDestinationsSingleCall(b *testing.B) {
+	defer setupTestOSContext(b)()
+	createDummyInterface(b)
+
+	ipvs := prepareServices(b, benchmarkNSvcs, benchmarkDstsPerSvc)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := 0
+		svcs, err := ipvs.GetServicesAndDestinations(nil)
+		if err != nil {
+			b.Fatalf("Failed to get services and destinations: %v", err)
+		}
+		for _, svc := range svcs {
+			for range svc.Destinations {
+				count++
+			}
+		}
+		if count != (benchmarkNSvcs * benchmarkDstsPerSvc) {
+			b.Fatalf("Wrong svcs + dsts count, expected %d, got %d", benchmarkNSvcs*benchmarkDstsPerSvc, count)
+		}
+	}
+	b.StopTimer()
+}
+
+func TestListServicesAndDestinations(t *testing.T) {
+	defer setupTestOSContext(t)()
+	createDummyInterface(t)
+
+	ipvs := prepareServices(t, 2, 100)
+
+	// svc := &Service{
+	// 	Address:       net.ParseIP("10.0.0.1"),
+	// 	Port:          10001,
+	// 	Protocol:      unix.IPPROTO_TCP,
+	// 	AddressFamily: nl.FAMILY_V4,
+	// }
+
+	// out, _ := exec.Command("sudo", "/home/cezarsa/ipvsadm/ipvsadm", "-Ln").CombinedOutput()
+	// fmt.Printf("sanity:\n%s\nxxxxxxxxxxxxxxxxxxx\n", string(out))
+
+	svcs, err := ipvs.GetServicesAndDestinations(nil)
+	if err != nil {
+		t.Fatalf("Failed to get services and destinations: %v", err)
+	}
+	for _, svc := range svcs {
+		fmt.Printf("svc: %v - %v\n", svc.Address, svc.Port)
+		for _, dst := range svc.Destinations {
+			fmt.Printf("  dest: %v - %v\n", dst.Address, dst.Port)
+		}
+	}
+}
+
+// func TestListServicesAndDestinationsSingleSvc(t *testing.T) {
+// 	defer setupTestOSContext(t)()
+// 	createDummyInterface(t)
+
+// 	ipvs := prepareServices(t, 1, 1)
+
+// 	// svc := &Service{
+// 	// 	Address:       net.ParseIP("10.0.0.1"),
+// 	// 	Port:          10000,
+// 	// 	Protocol:      unix.IPPROTO_TCP,
+// 	// 	AddressFamily: nl.FAMILY_V4,
+// 	// }
+
+// 	count := 0
+// 	svcs, err := ipvs.GetServicesAndDestinations(nil)
+// 	if err != nil {
+// 		t.Fatalf("Failed to get services and destinations: %v", err)
+// 	}
+// 	for _, svc := range svcs {
+// 		for range svc.Destinations {
+// 			count++
+// 		}
+// 	}
+// 	if count != 2 {
+// 		t.Fatalf("Wrong svcs + dsts count, expected %d, got %d", 2, count)
+// 	}
+// }
